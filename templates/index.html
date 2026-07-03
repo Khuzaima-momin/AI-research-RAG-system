@@ -1,0 +1,458 @@
+{% extends "base.html" %}
+
+{% block title %}AI Research Assistant — Chat{% endblock %}
+
+{% block content %}
+
+<main class="main-content">
+
+  <!-- ══════════════════════════════
+       SIDEBAR
+  ══════════════════════════════ -->
+  <aside class="sidebar">
+
+    <!-- Upload card -->
+    <div class="sidebar-card">
+      <p class="sidebar-title">Document Context</p>
+
+      <!-- Drop zone -->
+      <div class="upload-zone" id="uploadZone">
+        <input
+          type="file"
+          id="fileInput"
+          multiple
+          accept=".pdf,.txt,.docx,.md,.csv"
+          aria-label="Upload research documents"
+        >
+        <span class="upload-icon">📂</span>
+        <span class="upload-label">
+          <span>Click to browse</span> or drag files here
+        </span>
+        <p class="upload-hint">PDF · TXT · DOCX · MD · CSV</p>
+      </div>
+
+      <!-- File list (populated by JS) -->
+      <div class="file-list" id="fileList" aria-live="polite"></div>
+
+      <!-- Upload action -->
+      <button class="btn-upload" id="uploadBtn" disabled>
+        Upload Documents
+      </button>
+    </div>
+
+    <!-- Stats card -->
+    <div class="sidebar-card">
+      <p class="sidebar-title">Session Stats</p>
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="stat-value" id="statDocs">0</div>
+          <div class="stat-label">Documents</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="statMsgs">0</div>
+          <div class="stat-label">Messages</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="statTokens">—</div>
+          <div class="stat-label">Tokens</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="statTime">—</div>
+          <div class="stat-label">Avg ms</div>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ══════════════════════════════
+       CHAT PANEL
+  ══════════════════════════════ -->
+  <section class="chat-panel">
+
+    <!-- Header -->
+    <div class="chat-header">
+      <h1 class="chat-title">
+        <div class="status-dot"></div>
+        Research Chat
+      </h1>
+      <div class="chat-actions">
+        <button class="btn-ghost" id="exportBtn" title="Export conversation">
+          ↓ Export
+        </button>
+        <button class="btn-ghost" id="clearBtn" title="Clear conversation">
+          ✕ Clear
+        </button>
+      </div>
+    </div>
+
+    <!-- Chat box -->
+    <div class="chat-box" id="chatBox" role="log" aria-label="Conversation" aria-live="polite">
+
+      <!-- Welcome state (hidden once first message is sent) -->
+      <div class="welcome-state" id="welcomeState">
+        <div class="welcome-icon">🔬</div>
+        <p class="welcome-title">Ready to research</p>
+        <p class="welcome-subtitle">
+          Upload documents in the sidebar, then ask anything — summaries,
+          comparisons, key findings, citations, and more.
+        </p>
+        <div class="suggestion-chips" id="chips">
+          <button class="chip">Summarize the main findings</button>
+          <button class="chip">What are the key conclusions?</button>
+          <button class="chip">List all mentioned dates</button>
+          <button class="chip">Compare the two approaches</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Input area -->
+    <div class="input-area">
+      <div class="input-row">
+        <textarea
+          id="userInput"
+          class="input-field"
+          placeholder="Ask about your documents…"
+          rows="1"
+          aria-label="Your question"
+        ></textarea>
+        <button class="btn-send" id="sendBtn" title="Send message" aria-label="Send">
+          ➤
+        </button>
+      </div>
+      <div class="input-meta">
+        <span class="input-tip">Enter to send · Shift+Enter for new line</span>
+        <span class="model-badge">claude-3.5-sonnet</span>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+/* ─────────────────────────────────────────────
+   State
+───────────────────────────────────────────── */
+let selectedFiles = [];
+let messageCount  = 0;
+let totalLatency  = 0;
+let latencyCount  = 0;
+let docCount      = 0;
+
+/* ─────────────────────────────────────────────
+   DOM refs
+───────────────────────────────────────────── */
+const chatBox      = document.getElementById("chatBox");
+const userInput    = document.getElementById("userInput");
+const sendBtn      = document.getElementById("sendBtn");
+const uploadZone   = document.getElementById("uploadZone");
+const fileInput    = document.getElementById("fileInput");
+const fileList     = document.getElementById("fileList");
+const uploadBtn    = document.getElementById("uploadBtn");
+const welcomeState = document.getElementById("welcomeState");
+const clearBtn     = document.getElementById("clearBtn");
+const exportBtn    = document.getElementById("exportBtn");
+
+/* ─────────────────────────────────────────────
+   Stats helpers
+───────────────────────────────────────────── */
+function updateStats(latencyMs) {
+  document.getElementById("statDocs").textContent = docCount;
+  document.getElementById("statMsgs").textContent = messageCount;
+  if (latencyMs !== undefined) {
+    totalLatency += latencyMs;
+    latencyCount += 1;
+    document.getElementById("statTime").textContent =
+      Math.round(totalLatency / latencyCount);
+  }
+  // Tokens: placeholder, wire up from your API response if available
+}
+
+/* ─────────────────────────────────────────────
+   File handling
+───────────────────────────────────────────── */
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+function fileIcon(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  const map = { pdf: "📄", txt: "📝", docx: "📃", md: "📋", csv: "📊" };
+  return map[ext] || "📁";
+}
+
+function renderFileList() {
+  fileList.innerHTML = "";
+  selectedFiles.forEach((file, idx) => {
+    const item = document.createElement("div");
+    item.className = "file-item";
+    item.innerHTML = `
+      <span class="file-icon">${fileIcon(file.name)}</span>
+      <div class="file-info">
+        <div class="file-name" title="${file.name}">${file.name}</div>
+        <div class="file-size">${formatBytes(file.size)}</div>
+      </div>
+      <span class="file-status"></span>
+      <button class="file-remove" data-idx="${idx}" aria-label="Remove ${file.name}">✕</button>
+    `;
+    fileList.appendChild(item);
+  });
+
+  fileList.querySelectorAll(".file-remove").forEach(btn => {
+    btn.addEventListener("click", () => {
+      selectedFiles.splice(Number(btn.dataset.idx), 1);
+      renderFileList();
+      uploadBtn.disabled = selectedFiles.length === 0;
+    });
+  });
+
+  uploadBtn.disabled = selectedFiles.length === 0;
+}
+
+fileInput.addEventListener("change", () => {
+  selectedFiles = [...selectedFiles, ...Array.from(fileInput.files)];
+  // deduplicate by name
+  selectedFiles = selectedFiles.filter((f, i, arr) =>
+    arr.findIndex(x => x.name === f.name) === i
+  );
+  fileInput.value = "";
+  renderFileList();
+});
+
+/* Drag-and-drop */
+uploadZone.addEventListener("dragover", e => {
+  e.preventDefault();
+  uploadZone.classList.add("drag-over");
+});
+
+["dragleave", "drop"].forEach(evt =>
+  uploadZone.addEventListener(evt, () => uploadZone.classList.remove("drag-over"))
+);
+
+uploadZone.addEventListener("drop", e => {
+  e.preventDefault();
+  const dropped = Array.from(e.dataTransfer.files);
+  selectedFiles = [...selectedFiles, ...dropped].filter((f, i, arr) =>
+    arr.findIndex(x => x.name === f.name) === i
+  );
+  renderFileList();
+});
+
+/* Upload button */
+uploadBtn.addEventListener("click", async () => {
+  if (!selectedFiles.length) return;
+
+  uploadBtn.textContent = "Uploading…";
+  uploadBtn.disabled = true;
+
+  const formData = new FormData();
+
+  // send only one file (your backend supports single file)
+  formData.append("file", selectedFiles[0]);
+
+  try {
+    const res = await fetch("/upload", {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) {
+      throw new Error("Upload failed");
+    }
+
+    // success → refresh UI
+    docCount += 1;
+updateStats();
+selectedFiles = [];
+renderFileList();
+
+    addSystemMessage(`✓ ${selectedFiles.length} document(s) indexed and ready.`);
+
+    selectedFiles = [];
+    renderFileList();
+
+    location.reload(); // refresh page to show new files
+
+  } catch (err) {
+    console.error(err);
+    addSystemMessage("⚠ Upload failed — check server connection.");
+  } finally {
+    uploadBtn.textContent = "Upload Documents";
+    uploadBtn.disabled = true;
+  }
+});
+/* ─────────────────────────────────────────────
+   Chat helpers
+───────────────────────────────────────────── */
+function nowTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function hideWelcome() {
+  if (welcomeState) welcomeState.style.display = "none";
+}
+
+function addMessage(text, role) {
+  hideWelcome();
+  const wrapper = document.createElement("div");
+  wrapper.className = `msg ${role}`;
+
+  const avatar = role === "user" ? "👤" : "🧠";
+
+  wrapper.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div class="msg-body">
+      <div class="msg-bubble">${escapeHtml(text)}</div>
+      <div class="msg-time">${nowTime()}</div>
+    </div>
+  `;
+
+  chatBox.appendChild(wrapper);
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function addSystemMessage(text) {
+  hideWelcome();
+  const div = document.createElement("div");
+  div.style.cssText =
+    "text-align:center;font-size:0.72rem;color:var(--text-muted);" +
+    "font-family:'JetBrains Mono',monospace;padding:4px 0;";
+  div.textContent = text;
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function showTyping() {
+  const el = document.createElement("div");
+  el.className = "typing-indicator";
+  el.id = "typingIndicator";
+  el.innerHTML = `
+    <div class="msg-avatar" style="width:30px;height:30px;border-radius:50%;background:var(--bg-input);border:1px solid var(--border-mid);display:grid;place-items:center;font-size:13px;flex-shrink:0;">🧠</div>
+    <div class="typing-dots">
+      <span></span><span></span><span></span>
+    </div>
+  `;
+  chatBox.appendChild(el);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return el;
+}
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/* ─────────────────────────────────────────────
+   Send message
+───────────────────────────────────────────── */
+async function sendMessage() {
+  const text = userInput.value.trim();
+  if (!text) return;
+
+  addMessage(text, "user");
+  userInput.value = "";
+  userInput.style.height = "auto";
+  sendBtn.disabled = true;
+
+  messageCount++;
+  updateStats();
+
+  const typingEl = showTyping();
+  const t0 = Date.now();
+
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: text })
+    });
+
+    const data = await res.json();
+    typingEl.remove();
+
+    const latency = Date.now() - t0;
+    addMessage(data.answer || "No response received.", "bot");
+    messageCount++;
+    updateStats(latency);
+
+    // Update token stat if backend provides it
+    if (data.tokens) {
+      document.getElementById("statTokens").textContent = data.tokens;
+    }
+  } catch (err) {
+    typingEl.remove();
+    addMessage("Connection error — please try again.", "bot");
+  } finally {
+    sendBtn.disabled = false;
+    userInput.focus();
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Event listeners
+───────────────────────────────────────────── */
+sendBtn.addEventListener("click", sendMessage);
+
+userInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+/* Auto-grow textarea */
+userInput.addEventListener("input", () => {
+  userInput.style.height = "auto";
+  userInput.style.height = Math.min(userInput.scrollHeight, 120) + "px";
+});
+
+/* Suggestion chips */
+document.getElementById("chips").addEventListener("click", e => {
+  if (e.target.classList.contains("chip")) {
+    userInput.value = e.target.textContent;
+    userInput.focus();
+  }
+});
+
+/* Clear chat */
+clearBtn.addEventListener("click", () => {
+  chatBox.innerHTML = "";
+  chatBox.appendChild(welcomeState);
+  welcomeState.style.display = "";
+  messageCount = 0;
+  totalLatency = 0;
+  latencyCount = 0;
+  updateStats();
+});
+
+/* Export */
+exportBtn.addEventListener("click", () => {
+  const msgs = [...chatBox.querySelectorAll(".msg")];
+  const lines = msgs.map(m => {
+    const role   = m.classList.contains("user") ? "You" : "AI";
+    const bubble = m.querySelector(".msg-bubble");
+    const time   = m.querySelector(".msg-time");
+    return `[${time?.textContent ?? ""}] ${role}: ${bubble?.textContent ?? ""}`;
+  });
+  const blob = new Blob([lines.join("\n\n")], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `research-chat-${Date.now()}.txt`;
+  a.click();
+});
+
+/* Init */
+updateStats();
+</script>
+{% endblock %}

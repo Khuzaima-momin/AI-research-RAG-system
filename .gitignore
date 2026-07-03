@@ -1,0 +1,39 @@
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables (API Keys)
+.env
+
+# Vector Database
+vector_db/
+
+# Uploaded Files
+uploads/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Build Files
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db

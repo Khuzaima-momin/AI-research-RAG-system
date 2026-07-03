@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}AI Research Assistant{% endblock %}</title>
+
+  <!-- Preconnect for Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+  {% block head_extra %}{% endblock %}
+</head>
+
+<body>
+
+<div class="app-shell">
+
+  <!-- ── Navbar ── -->
+  <nav class="navbar">
+    <a class="navbar-brand" href="/">
+      <div class="navbar-icon">🧠</div>
+      ResearchAI
+    </a>
+    <span class="navbar-meta">v1.0 · RAG-powered</span>
+  </nav>
+
+  <!-- ── Flash messages ── -->
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for message in messages %}
+          <li>{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <!-- ── Page content ── -->
+  {% block content %}{% endblock %}
+
+</div>
+
+{% block scripts %}{% endblock %}
+
+</body>
+</html>
