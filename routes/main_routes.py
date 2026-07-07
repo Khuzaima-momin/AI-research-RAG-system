@@ -2,158 +2,308 @@ from flask import Blueprint, render_template, request, redirect, jsonify
 import os
 from werkzeug.utils import secure_filename
 
+# -----------------------------
+# RAG MODULES
+# -----------------------------
 from rag.parser import extract_text
 from rag.chunker import chunk_text
 from rag.embeddings import get_embeddings
-from rag.database import add_chunks_to_db
-from rag.retriever import retrieve_chunks
+from rag.database import (
+    add_chunks_to_db,
+    clear_database
+)
+from rag.retriever import (
+    retrieve_chunks,
+    build_context
+)
 from rag.generator import generate_answer
+from rag.memory import memory
 
+# -----------------------------
+# Blueprint
+# -----------------------------
 main = Blueprint("main", __name__)
 
+# -----------------------------
+# Configuration
+# -----------------------------
 UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {"pdf", "txt", "docx"}
+
+ALLOWED_EXTENSIONS = {
+    "pdf",
+    "docx",
+    "txt"
+}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-# -----------------------------
-# Helper: file validation
-# -----------------------------
+# ==========================================================
+# FILE VALIDATION
+# ==========================================================
+
 def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+    return (
+        "." in filename
+        and
+        filename.rsplit(".", 1)[1].lower()
+        in ALLOWED_EXTENSIONS
+    )
 
 
-# -----------------------------
+# ==========================================================
+# STANDARD JSON RESPONSES
+# ==========================================================
+
+def success_response(query, answer, sources=None):
+
+    return jsonify({
+
+        "success": True,
+
+        "query": query,
+
+        "answer": answer,
+
+        "sources": sources or []
+
+    })
+
+
+def error_response(message, code=400):
+
+    return jsonify({
+
+        "success": False,
+
+        "error": message
+
+    }), code
+
+
+# ==========================================================
 # HOME PAGE
-# -----------------------------
+# ==========================================================
+
 @main.route("/")
 def home():
-    files = os.listdir(UPLOAD_FOLDER)
-    return render_template("index.html", files=files)
 
+    files = sorted(os.listdir(UPLOAD_FOLDER))
+
+    return render_template(
+
+        "index.html",
+
+        files=files
+
+    )
+
+
+# ==========================================================
+# HEALTH CHECK
+# ==========================================================
+
+@main.route("/health")
+def health():
+
+    return jsonify({
+
+        "status": "healthy",
+
+        "uploaded_documents": len(os.listdir(UPLOAD_FOLDER)),
+
+        "conversation_messages": memory.size()
+
+    })
+
+
+# ==========================================================
+# CLEAR CHAT MEMORY
+# ==========================================================
+
+@main.route("/clear-chat", methods=["POST"])
+def clear_chat():
+
+    memory.clear()
+
+    return jsonify({
+
+        "success": True,
+
+        "message": "Conversation memory cleared."
+
+    })
+# ==========================================================
+# UPLOAD DOCUMENT
+# ==========================================================
 
 @main.route("/upload", methods=["POST"])
 def upload_file():
 
-    print("\n===== UPLOAD STARTED =====")
+    print("\n========== UPLOAD STARTED ==========")
 
-    # 1. CHECK FILE
+    # -----------------------------
+    # Validate Request
+    # -----------------------------
     if "file" not in request.files:
-        print("NO FILE PART FOUND")
-        return redirect("/")
+        return error_response("No file received.", 400)
 
     file = request.files["file"]
 
     if file.filename == "":
-        print("EMPTY FILE NAME")
-        return redirect("/")
+        return error_response("No file selected.", 400)
 
     if not allowed_file(file.filename):
-        print("INVALID FILE TYPE:", file.filename)
-        return redirect("/")
+        return error_response("Unsupported file type.", 400)
 
-    # 2. SAVE FILE SAFELY
+    # -----------------------------
+    # Save File
+    # -----------------------------
     filename = secure_filename(file.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
+
+    filepath = os.path.join(
+        UPLOAD_FOLDER,
+        filename
+    )
 
     file.save(filepath)
 
-    print("FILE SAVED:", filepath)
+    print("Saved:", filepath)
 
     try:
-        # 3. EXTRACT TEXT
+
+        # -----------------------------
+        # Extract Text
+        # -----------------------------
         text = extract_text(filepath)
 
-        if not text:
-            print("NO TEXT EXTRACTED FROM FILE")
-            return redirect("/")
+        if not text.strip():
+            return error_response(
+                "No readable text found in the uploaded document.",
+                400
+            )
 
-        print("TEXT EXTRACTION SUCCESS")
+        print("✓ Text extracted")
 
-        # 4. CHUNK TEXT
+        # -----------------------------
+        # Chunk Document
+        # -----------------------------
         chunks = chunk_text(text)
 
-        if not chunks:
-            print("NO CHUNKS GENERATED")
-            return redirect("/")
+        if len(chunks) == 0:
+            return error_response(
+                "Chunking failed.",
+                500
+            )
 
-        print(f"CHUNKS CREATED: {len(chunks)}")
+        print(f"✓ Chunks Created : {len(chunks)}")
 
-        # 5. EMBEDDINGS
+        # -----------------------------
+        # Create Embeddings
+        # -----------------------------
         embeddings = get_embeddings(chunks)
 
-        # 6. STORE IN VECTOR DB
-        add_chunks_to_db(chunks, embeddings, filename)
+        print("✓ Embeddings Created")
 
-        print("\nFILE INDEXED SUCCESSFULLY!")
-        print("File:", filename)
-        print("Chunks:", len(chunks))
+
+        # ---------------------------------
+# Remove previous documents
+# ---------------------------------
+        clear_database()
+
+        print("✓ Previous database cleared")
+
+        # -----------------------------
+        # Store in ChromaDB
+        # -----------------------------
+        add_chunks_to_db(
+            chunks,
+            embeddings,
+            filename
+        )
+
+        print("✓ Stored in Vector Database")
+
+        print("========== UPLOAD COMPLETE ==========\n")
+
+        return jsonify({
+
+            "success": True,
+
+            "filename": filename,
+
+            "chunks": len(chunks),
+
+            "message": "Document indexed successfully."
+
+        })
 
     except Exception as e:
-        print("\nERROR DURING INDEXING:")
+
+        print("\nUPLOAD ERROR")
         print(str(e))
 
-    print("===== UPLOAD END =====\n")
+        return error_response(
+            str(e),
+            500
+        )
+    
+    # ==========================================================
+# CHAT API
+# ==========================================================
 
-    return redirect("/")
-
-
-# -----------------------------
-# CHAT API (RAG CORE)
-# -----------------------------
 @main.route("/chat", methods=["POST"])
 def chat():
 
     try:
+
         data = request.get_json()
+
         query = data.get("query", "").strip()
 
         if not query:
-            return jsonify({"error": "Empty query"}), 400
+            return error_response("Empty query.", 400)
 
-        print("\n===== CHAT REQUEST =====")
-        print("Query:", query)
+        # Save user message
+        memory.add_user_message(query)
 
-        # 1. Retrieve relevant chunks
+        # Retrieve relevant chunks
         results = retrieve_chunks(query)
 
-        print("Raw retrieval result:", results)
+        chunks = results.get("documents", [[]])[0]
 
-        # 2. Safe extraction of chunks
-        chunks = []
-
-        if results:
-            if isinstance(results, dict):
-                if "documents" in results and results["documents"]:
-                    chunks = results["documents"][0]
-
-                elif "chunks" in results:
-                    chunks = results["chunks"]
-
-        print("Final chunks used:", chunks)
-
-        # 3. Handle empty retrieval safely
         if not chunks:
-            return jsonify({
-                "query": query,
-                "answer": "I couldn't find relevant information in the uploaded documents."
-            })
+            return success_response(
+                query,
+                "I couldn't find this information in the uploaded documents."
+            )
 
-        # 4. Generate response
-        answer = generate_answer(query, chunks)
+        # Build context
+        context = build_context(chunks)
 
-        print("Answer generated successfully")
+        # Build conversation history
+        history = memory.build_history()
 
-        return jsonify({
-            "query": query,
-            "answer": answer
-        })
+        # Generate answer
+        answer = generate_answer(
+            query=query,
+            context=context,
+            conversation_history=history
+        )
+
+        # Save assistant response
+        memory.add_ai_message(answer)
+
+        return success_response(
+            query=query,
+            answer=answer,
+            sources=results.get("metadatas", [[]])[0]
+        )
 
     except Exception as e:
-        print("CHAT ERROR:", str(e))
 
-        return jsonify({
-            "error": str(e),
-            "answer": "Backend error occurred while processing your request."
-        }), 500
+        print("\nCHAT ERROR")
+        print(str(e))
+
+        return error_response(str(e), 500)

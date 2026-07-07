@@ -354,49 +354,114 @@ function escapeHtml(str) {
 }
 
 /* ─────────────────────────────────────────────
-   Send message
+   Send Message
 ───────────────────────────────────────────── */
 async function sendMessage() {
-  const text = userInput.value.trim();
-  if (!text) return;
 
-  addMessage(text, "user");
-  userInput.value = "";
-  userInput.style.height = "auto";
-  sendBtn.disabled = true;
+    const text = userInput.value.trim();
 
-  messageCount++;
-  updateStats();
+    if (!text) return;
 
-  const typingEl = showTyping();
-  const t0 = Date.now();
+    addMessage(text, "user");
 
-  try {
-    const res = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: text })
-    });
+    userInput.value = "";
+    userInput.style.height = "auto";
 
-    const data = await res.json();
-    typingEl.remove();
+    sendBtn.disabled = true;
 
-    const latency = Date.now() - t0;
-    addMessage(data.answer || "No response received.", "bot");
     messageCount++;
-    updateStats(latency);
+    updateStats();
 
-    // Update token stat if backend provides it
-    if (data.tokens) {
-      document.getElementById("statTokens").textContent = data.tokens;
+    const typingEl = showTyping();
+    const startTime = Date.now();
+
+    try {
+
+        const res = await fetch("/chat", {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type": "application/json"
+            },
+
+            body: JSON.stringify({
+                query: text
+            })
+
+        });
+
+        // Remove typing animation
+        typingEl.remove();
+
+        // Backend returned an error
+        if (!res.ok) {
+
+            let errorMessage = "Server Error";
+
+            try {
+
+                const errorData = await res.json();
+
+                errorMessage = errorData.error || errorData.answer || errorMessage;
+
+            } catch {
+
+                errorMessage = await res.text();
+
+            }
+
+            addMessage(errorMessage, "bot");
+
+            return;
+
+        }
+
+        // Read JSON
+        const data = await res.json();
+
+        const latency = Date.now() - startTime;
+
+        addMessage(
+            data.answer || "No answer received.",
+            "bot"
+        );
+
+        messageCount++;
+
+        updateStats(latency);
+
+        if (data.tokens) {
+
+            document.getElementById("statTokens").textContent =
+                data.tokens;
+
+        }
+
     }
-  } catch (err) {
-    typingEl.remove();
-    addMessage("Connection error — please try again.", "bot");
-  } finally {
-    sendBtn.disabled = false;
-    userInput.focus();
-  }
+
+    catch (error) {
+
+        console.error(error);
+
+        if (typingEl)
+            typingEl.remove();
+
+        addMessage(
+            "Unable to connect to the server.",
+            "bot"
+        );
+
+    }
+
+    finally {
+
+        sendBtn.disabled = false;
+
+        userInput.focus();
+
+    }
+
 }
 
 /* ─────────────────────────────────────────────
